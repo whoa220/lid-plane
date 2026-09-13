@@ -7,8 +7,10 @@ import ScreenCaptureKit
 final class DesktopCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private var cancelled = false
-    var onFrame: ((CVPixelBuffer) -> Void)?
-    var onError: ((Error) -> Void)?
+    //  11-13, samples go to capturequeue.
+    private let captureQueue = DispatchQueue(label: "dev.jhey.lidplane.capture")
+    var onFrame: (@MainActor @Sendable (CVPixelBuffer) -> Void)?
+    var onError: (@MainActor @Sendable (Error) -> Void)?
     private(set) var frames = 0
 
     @MainActor
@@ -37,7 +39,7 @@ final class DesktopCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         config.capturesAudio = false
         config.colorSpaceName = CGColorSpace.sRGB
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .main)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
         self.stream = stream
         try await stream.startCapture()
         if cancelled {
@@ -63,13 +65,13 @@ final class DesktopCapture: NSObject, SCStreamOutput, SCStreamDelegate {
               let pixelBuffer = sampleBuffer.imageBuffer else { return }
         frames += 1
         if frames == 1 { NSLog("Desktop capture received first complete frame") }
-        onFrame?(pixelBuffer)
+        Task { @MainActor in self.onFrame?(pixelBuffer) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        DispatchQueue.main.async { [weak self] in
-            guard self?.stream === stream else { return }
-            self?.onError?(error)
+        Task { @MainActor [weak self] in
+            guard let self, self.stream === stream else { return }
+            self.onError?(error)
         }
     }
 }
